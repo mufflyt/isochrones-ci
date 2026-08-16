@@ -109,15 +109,16 @@ jobs:
         if: always()
         run: Rscript scripts/verify-test-accounting.R
 
-      - name: Verify fixtures were not silently rewritten
+      # VALUES, not bytes. A `git diff` after regeneration answers "did R format
+      # these doubles identically", which is not the claim being made and is not
+      # true across R versions -- the first real nightly failed exactly that way
+      # on travel_times.csv, the file with the most doubles. This asks whether
+      # the generator still produces the committed numbers, and prints the worst
+      # deviation so ~1e-15 (formatting) is never confused with a real
+      # determinism problem.
+      - name: Verify fixtures still reproduce from their seed
         if: always()
-        run: |
-          Rscript scripts/regenerate-fixtures.R
-          if [ -n "$(git status --porcelain fixtures/)" ]; then
-            echo "::error title=Fixtures drifted::The committed fixtures no longer match the generator. Regenerate deliberately with --accept and read the diff."
-            git --no-pager diff -- fixtures/ | head -60
-            exit 1
-          fi
+        run: Rscript scripts/check-fixture-drift.R
 
       - name: Confirm the suite left the tree unmodified
         if: always()
