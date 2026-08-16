@@ -358,3 +358,135 @@ with_chunk_mutant <- function(name, expr, envir = parent.frame()) {
   on.exit(assign("chunk_2sfca", original, envir = globalenv()), add = TRUE)
   force(eval(expr, envir = envir))
 }
+
+# ---------------------------------------------------------------------------
+# ACTIVATION WITNESSES.
+#
+# THE META-CONTRACT: a mutant must PROVE it changed the intended behaviour
+# before its killing probe is evaluated.
+#
+# WHY. On 2026-08-16 the chunking mutants were built by deparsing the target and
+# substituting anchor strings. deparse() reformats source, three anchors stopped
+# matching, and two mutants were reported as SURVIVING when they had never been
+# applied at all. A never-installed mutant is worse than a genuinely surviving
+# one: a surviving mutant correctly indicts the tests, while a dormant one
+# indicts them falsely, and the two are indistinguishable from the kill table.
+#
+# So every mutant now carries a witness: an input on which the mutated function
+# demonstrably differs from the original. Three outcomes, never two:
+#
+#   NOT APPLIED  witness shows no behavioural change -> the MUTANT is broken
+#   SURVIVED     witness differs, no probe failed    -> the TESTS have a hole
+#   KILLED       witness differs, a probe failed     -> working as intended
+#
+# This also protects against future refactors: if a rename or signature change
+# makes a mutant dormant, the witness fails loudly instead of the kill table
+# quietly reporting a coverage hole that is really a bookkeeping bug.
+
+# A witness input per TARGET function. Several mutants share a target, so this
+# is smaller than one witness per mutant and cannot drift out of step with the
+# thing being corrupted.
+.witness_world <- function() {
+  make_world(seed = 4242L, n_providers = 5L, n_tracts = 12L,
+             isolated = 1L, zero_pop = 2L)
+}
+
+WITNESS <- list(
+  ref_reached = function(f) {
+    tt <- data.frame(provider_id = "P1", tract_id = "T1", minutes = 60,
+                     stringsAsFactors = FALSE)
+    f(tt, 60)                                   # exactly AT the threshold
+  },
+  ref_pop_share_within = function(f) {
+    # The CANONICAL world, not the small witness world.
+    #
+    # The witness world is degenerate for this target: its 30- and 60-minute
+    # population shares are both 0.1305573, so `swapped_bands` -- which swaps
+    # exactly those two -- changed nothing and was reported as NOT APPLIED on
+    # the activation contract's very first run. The mutant was fine; the witness
+    # input was. A witness that cannot distinguish the mutation is no witness.
+    #
+    # The guard below keeps that from recurring silently: if the two bands ever
+    # coincide again, this raises instead of quietly certifying a dormant mutant.
+    w <- make_world(seed = 20260816L, n_providers = 8L, n_tracts = 25L,
+                    isolated = 1L, zero_pop = 2L, duplicate_coords = TRUE)
+    s30 <- ref_pop_share_within(w$tt, w$tracts, 30)
+    s60 <- ref_pop_share_within(w$tt, w$tracts, 60)
+    if (isTRUE(all.equal(s30, s60))) {
+      stop("witness input for ref_pop_share_within is degenerate: the 30- and ",
+           "60-minute shares coincide, so a band swap is undetectable here",
+           call. = FALSE)
+    }
+    c(f(w$tt, w$tracts, 30), f(w$tt, w$tracts, 60))
+  },
+  ref_2sfca = function(f) {
+    w <- .witness_world()
+    r <- f(w$tt, w$providers, w$tracts, 60)
+    list(ratio = r$provider_ratio, access = r$tract_access)
+  },
+  ref_allocate = function(f) f(100, c(1, 0, 2, 0, 3)),
+  ref_prop_ci = function(f) f(1, 10),           # small n: Wald runs below zero
+  ref_moe90_to_ci95_factor = function(f) f(),
+  ref_rurality = function(f) f(c(1, 3, 4, 10)),
+  ref_safe_divide = function(f) c(f(1, 0), f(0, 0), f(6, 3)),
+  ref_canon_id = function(f) f(c("123456789", "1234567890")),
+  band_contains = function(f) {
+    require_sf()
+    small <- sf::st_sf(geometry = sf::st_sfc(
+      sf::st_polygon(list(cbind(c(0, 1, 1, 0, 0), c(0, 0, 1, 1, 0)))),
+      crs = FIXTURE_CRS_PROJECTED))
+    big <- sf::st_sf(geometry = sf::st_sfc(
+      sf::st_polygon(list(cbind(c(-1, 2, 2, -1, -1), c(-1, -1, 2, 2, -1)))),
+      crs = FIXTURE_CRS_PROJECTED))
+    c(f(small, big), f(big, small))
+  }
+)
+
+#' Does this core mutant actually change behaviour?
+#'
+#' @return list(activated, target, note)
+mutant_activates <- function(name) {
+  m <- MUTANTS[[name]]
+  if (is.null(m)) stop("unknown mutant: ", name)
+  tgt <- m$target
+  wit <- WITNESS[[tgt]]
+  if (is.null(wit)) {
+    return(list(activated = NA, target = tgt,
+                note = paste0("no witness defined for target '", tgt,
+                              "'; activation cannot be established")))
+  }
+  before <- tryCatch(wit(get(tgt, envir = globalenv())),
+                     error = function(e) structure("error", msg = conditionMessage(e)))
+  after <- tryCatch(wit(m$make()),
+                    error = function(e) structure("error", msg = conditionMessage(e)))
+  # An error introduced BY the mutation is also a behavioural change, and a
+  # legitimate one: several plausible defects crash rather than mis-compute.
+  list(activated = !isTRUE(all.equal(before, after)), target = tgt,
+       note = if (isTRUE(all.equal(before, after)))
+         "mutant output is identical to the original on its witness input" else "")
+}
+
+# The chunking witness deliberately exercises EVERY condition a chunking mutant
+# needs to manifest: an uneven scheme (empty and singleton chunks), a reversed
+# order, an isolated provider (an undefined ratio), and zero-population tracts.
+# Without all four, several mutants are dormant and look dead.
+.witness_chunk <- function(f) {
+  w <- .witness_world()
+  r <- f(w$tt, w$providers, w$tracts, 60, n_chunks = 4L,
+         scheme = "uneven", chunk_order = "reversed", seed = 7L)
+  list(access = r$tract_access, ratio = r$provider_ratio,
+       n = r$n_chunks, ids = names(r$tract_access))
+}
+
+#' Does this chunking mutant actually change behaviour?
+chunk_mutant_activates <- function(name) {
+  m <- MUTANTS_CHUNKING[[name]]
+  if (is.null(m)) stop("unknown chunking mutant: ", name)
+  before <- tryCatch(.witness_chunk(CHUNK_2SFCA_ORIGINAL),
+                     error = function(e) structure("error", msg = conditionMessage(e)))
+  after <- tryCatch(.witness_chunk(m$make()),
+                    error = function(e) structure("error", msg = conditionMessage(e)))
+  list(activated = !isTRUE(all.equal(before, after)), target = "chunk_2sfca",
+       note = if (isTRUE(all.equal(before, after)))
+         "mutant output is identical to the original on the chunking witness" else "")
+}

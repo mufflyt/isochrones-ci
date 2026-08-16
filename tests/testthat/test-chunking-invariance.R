@@ -386,24 +386,41 @@ test_that("SABOTAGE: every chunking mutant is killed by a named probe", {
   expect_equal(fails(), character(0),
                info = "a chunking probe fails on unmutated code; fix the probe first")
 
+  # ACTIVATION CONTRACT, enforced before any kill is believed. These mutants
+  # are exactly the ones that motivated it: two of them were once reported as
+  # surviving when a deparse-based construction had silently failed to apply
+  # them at all.
   results <- data.frame(mutant = character(0), description = character(0),
-                        killed = logical(0), killed_by = character(0),
+                        activated = logical(0), killed = logical(0),
+                        killed_by = character(0), outcome = character(0),
                         stringsAsFactors = FALSE)
   for (nm in names(MUTANTS_CHUNKING)) {
+    act <- isTRUE(chunk_mutant_activates(nm)$activated)
     f <- tryCatch(with_chunk_mutant(nm, quote(fails())),
                   error = function(e) "raised-an-error")
+    killed <- length(f) > 0L
     results <- rbind(results, data.frame(
       mutant = nm, description = MUTANTS_CHUNKING[[nm]]$description,
-      killed = length(f) > 0L, killed_by = paste(f, collapse = "; "),
+      activated = act, killed = killed, killed_by = paste(f, collapse = "; "),
+      outcome = if (!act) "NOT_APPLIED" else if (killed) "KILLED" else "SURVIVED",
       stringsAsFactors = FALSE))
   }
+
+  expect_equal(sum(results$outcome == "NOT_APPLIED"), 0L,
+               info = paste0(
+                 "Chunking mutant(s) did NOT change behaviour on the witness. The ",
+                 "witness deliberately uses an uneven scheme, reversed order, an ",
+                 "isolated provider and zero-population tracts precisely so that ",
+                 "every mutant can manifest; a NOT_APPLIED here means the mutant ",
+                 "or the witness is broken, not the tests:\n",
+                 paste(results$mutant[results$outcome == "NOT_APPLIED"], collapse = ", ")))
 
   dir.create(file.path(.harness_root, "artifacts"), showWarnings = FALSE, recursive = TRUE)
   utils::write.csv(results,
                    file.path(.harness_root, "artifacts", "mutation-report-chunking.csv"),
                    row.names = FALSE)
 
-  survivors <- results[!results$killed, ]
+  survivors <- results[results$outcome == "SURVIVED", ]
   expect_equal(nrow(survivors), 0L,
                info = paste0(
                  "Chunking mutant(s) SURVIVED -- each is a plausible decomposition ",

@@ -106,18 +106,51 @@ test_that("SANITY: every probe passes against the unmutated reference", {
                info = "a probe fails on clean code; fix the probe before trusting any kill count")
 })
 
+test_that("ACTIVATION CONTRACT: every mutant proves it changed behaviour", {
+  # THE META-CONTRACT. A mutant must demonstrate it altered the intended
+  # behaviour BEFORE its killing probe is believed. Without this there are only
+  # two visible outcomes -- killed and survived -- and a mutant that was never
+  # applied is indistinguishable from one the tests cannot catch. The first is
+  # a bug in the mutant; the second is a hole in the suite; conflating them
+  # falsely indicts the tests.
+  #
+  # It found something on its first run: `swapped_bands` did not activate,
+  # because the witness world's 30- and 60-minute population shares happened to
+  # be identical (both 0.1305573), so swapping the bands changed nothing. The
+  # mutant was correct and the WITNESS INPUT was degenerate. See WITNESS in
+  # R/mutants.R, which now guards against that recurring silently.
+  not_applied <- character(0)
+  for (nm in names(MUTANTS)) {
+    a <- mutant_activates(nm)
+    if (!isTRUE(a$activated)) {
+      not_applied <- c(not_applied, sprintf("%s [target %s]: %s", nm, a$target, a$note))
+    }
+  }
+  expect_equal(
+    length(not_applied), 0L,
+    info = paste0("Mutant(s) did NOT change behaviour on their witness input. ",
+                  "These are broken MUTANTS or inadequate WITNESSES -- not ",
+                  "evidence about the tests:\n", paste(not_applied, collapse = "\n")))
+})
+
 test_that("MUTATION: every controlled mutant is killed by at least one probe", {
   results <- data.frame(mutant = character(0), description = character(0),
-                        killed = logical(0), killed_by = character(0),
+                        activated = logical(0), killed = logical(0),
+                        killed_by = character(0), outcome = character(0),
                         stringsAsFactors = FALSE)
 
   for (nm in names(MUTANTS)) {
+    act <- isTRUE(mutant_activates(nm)$activated)
     failed <- with_mutant(nm, quote(.probe_fails()))
+    killed <- length(failed) > 0L
     results <- rbind(results, data.frame(
       mutant = nm,
       description = MUTANTS[[nm]]$description,
-      killed = length(failed) > 0L,
+      activated = act,
+      killed = killed,
       killed_by = paste(failed, collapse = "; "),
+      # THREE outcomes, never two.
+      outcome = if (!act) "NOT_APPLIED" else if (killed) "KILLED" else "SURVIVED",
       stringsAsFactors = FALSE))
   }
 
@@ -125,7 +158,9 @@ test_that("MUTATION: every controlled mutant is killed by at least one probe", {
   utils::write.csv(results, file.path(.harness_root, "artifacts", "mutation-report.csv"),
                    row.names = FALSE)
 
-  survivors <- results[!results$killed, ]
+  survivors <- results[results$outcome == "SURVIVED", ]
+  expect_equal(sum(results$outcome == "NOT_APPLIED"), 0L,
+               info = "a mutant that was never applied cannot be evidence about the tests")
   expect_equal(nrow(survivors), 0L,
                info = paste0(
                  "Mutant(s) SURVIVED. Each is a plausible scientific error that this ",
