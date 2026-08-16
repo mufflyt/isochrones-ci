@@ -1,0 +1,9 @@
+^\.github$
+^\.gitignore$
+^README\.md$
+^SCIENTIFIC_VALIDATION\.md$
+^CONTRIBUTING\.md$
+^artifacts$
+^fixtures$
+^scripts$
+^\.Rproj\.user$

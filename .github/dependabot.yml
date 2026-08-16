@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Third-party actions are SHA-pinned in the workflows. Dependabot is what keeps
+  # a pin from silently rotting: it opens a PR with the new SHA and the release
+  # notes, and the PR runs the full science gate before anyone merges it.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

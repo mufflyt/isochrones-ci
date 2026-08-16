@@ -1,0 +1,124 @@
+name: Nightly
+
+# TIER B: the serious battery. Everything the PR gate runs, plus the randomized
+# sweep, the adversarial corpus, the metamorphic layer and the mutation tests --
+# across an R version matrix.
+#
+# Depth beats runtime here. This repository exists to test; a nightly that takes
+# 40 minutes and tries hard is worth far more than one that takes 4 and does not.
+#
+# SCHEDULE: 08:20 UTC = 02:20 America/Denver (MDT, UTC-6) / 01:20 (MST, UTC-7).
+# The :20 offset is deliberate -- starting on the hour puts every repository in
+# the account into the same GitHub scheduling queue, and scheduled runs are
+# already best-effort.
+
+on:
+  schedule:
+    - cron: "20 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false   # never cancel a nightly halfway; a partial nightly
+                              # is exactly the truncated run this repo distrusts
+
+permissions:
+  contents: read
+
+env:
+  PRODUCTION_REPO: mufflyt/mufflyaccess
+  PRODUCTION_REF: main
+  RENV_CONFIG_AUTOLOADER_ENABLED: "false"
+
+jobs:
+  battery:
+    name: full battery (R ${{ matrix.r }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false        # one R version failing must not hide the others
+      matrix:
+        r: ['release', 'oldrel-1']
+    env:
+      # A different seed per night, derived from the run number, so the harness
+      # explores new worlds over time -- and the seed is printed in the summary
+      # and saved in the artifact, so any failure is reproducible exactly.
+      HARNESS_SEED: ${{ github.run_number }}
+      HARNESS_RANDOM_WORLDS: "200"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.r }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::testthat, any::sf, any::yaml, any::withr, any::digest
+          dependencies: '"hard"'
+
+      - name: Resolve and record the production SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/${PRODUCTION_REPO}.git" "${PRODUCTION_REF}" | cut -f1)"
+          [ -n "$sha" ] || { echo "::error::cannot resolve ${PRODUCTION_REPO}@${PRODUCTION_REF}"; exit 1; }
+          echo "PRODUCTION_SHA=$sha" >> "$GITHUB_ENV"
+
+      - name: Install production at the resolved SHA
+        shell: Rscript {0}
+        run: |
+          if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+          remotes::install_github(
+            paste0(Sys.getenv("PRODUCTION_REPO"), "@", Sys.getenv("PRODUCTION_SHA")),
+            upgrade = "never")
+          if (!requireNamespace("mufflyaccess", quietly = TRUE)) {
+            stop("production package failed to install; refusing to report green")
+          }
+
+      - name: Record the environment (so a failure is reproducible)
+        if: always()
+        shell: Rscript {0}
+        run: |
+          dir.create("artifacts", showWarnings = FALSE)
+          writeLines(utils::capture.output(utils::sessionInfo()),
+                     "artifacts/sessionInfo.txt")
+          ip <- as.data.frame(utils::installed.packages()[, c("Package", "Version")])
+          utils::write.csv(ip, "artifacts/installed-packages.csv", row.names = FALSE)
+
+      - name: Run the full battery
+        run: Rscript scripts/run-ci.R
+
+      - name: Verify test accounting
+        if: always()
+        run: Rscript scripts/verify-test-accounting.R
+
+      - name: Verify fixtures were not silently rewritten
+        if: always()
+        run: |
+          Rscript scripts/regenerate-fixtures.R
+          if [ -n "$(git status --porcelain fixtures/)" ]; then
+            echo "::error title=Fixtures drifted::The committed fixtures no longer match the generator. Regenerate deliberately with --accept and read the diff."
+            git --no-pager diff -- fixtures/ | head -60
+            exit 1
+          fi
+
+      - name: Confirm the suite left the tree unmodified
+        if: always()
+        run: |
+          dirty="$(git status --porcelain --untracked-files=no)"
+          if [ -n "$dirty" ]; then
+            echo "::error title=Suite mutated tracked files::a test wrote into the repository"
+            echo "$dirty"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-${{ matrix.r }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error

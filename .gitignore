@@ -1,0 +1,28 @@
+# Nothing generated belongs in git. This repo publishes fixtures and code only.
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# NEVER commit an environment file. This repo is public.
+.Renviron
+.env
+*credentials*
+*secret*
+*token*
+*.pem
+*.key
+# ...but never swallow a TEST or a workflow by filename (isochrones
+# HALL_OF_SHAME.md #13: `*credentials*` silently ignored the credential guard
+# itself, and `git add` reported success while the file never entered the index).
+!tests/testthat/test-*.R
+!.github/workflows/*.yml
+
+# CI output. Regenerate, never commit.
+artifacts/*
+!artifacts/.gitkeep
+test-results/
+*.Rcheck/
+renv/library/
+renv/staging/

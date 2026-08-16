@@ -1,0 +1,30 @@
+Package: isochronesci
+Title: Public CI and Scientific-Validation Harness for the Isochrones Pipeline
+Version: 0.1.0
+Authors@R: person("Tyler", "Muffly", role = c("aut", "cre"),
+                  email = "tyler.muffly@dhha.org")
+Description: A deliberately small, public proving ground that exercises the
+    production isochrones/accessibility system against synthetic fixtures and
+    checks its answers against an independent reference implementation. This is
+    a verifier, not a second production implementation: it contains no
+    production algorithms, no real patient- or physician-level data, and no
+    canonical datasets.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.2)
+Imports:
+    stats,
+    utils
+Suggests:
+    testthat (>= 3.0.0),
+    sf,
+    yaml,
+    jsonlite,
+    digest,
+    withr,
+    mufflyaccess
+Remotes:
+    mufflyt/mufflyaccess
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2

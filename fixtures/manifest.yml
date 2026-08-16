@@ -1,0 +1,24 @@
+fixture_version: 1
+created: 2026-08-16
+generator_seed: 20260816
+generator_version: 1
+description: >
+  A synthetic Colorado-shaped validation universe. Eight providers (one
+  deliberately isolated, two sharing exact coordinates), twenty-five tracts (two
+  with zero population), and a full travel-time matrix. Everything is generated
+  from the seed above; nothing is derived from a real person, provider, address,
+  or census tract.
+sources:
+  - name: synthetic
+    origin: R/fixture_helpers.R::make_world()
+    license: "MIT (this repository); no external data incorporated"
+    redistributable: true
+regenerate: "Rscript scripts/regenerate-fixtures.R --accept"
+expected_production_contract:
+  package: mufflyaccess
+  asserts:
+    - CANONICAL_BANDS == [30, 60, 120, 180]
+    - PRIMARY_ACCESS_BAND_MIN is a member of CANONICAL_BANDS
+    - CONUS_STATE_ABBR has 49 entries (48 states + DC)
+    - NON_CONTIGUOUS_CODES excludes every CONUS_STATE_ABBR entry
+

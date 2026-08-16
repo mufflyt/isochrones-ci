@@ -1,0 +1,150 @@
+name: Manual
+
+# TIER C: test a REQUESTED production commit.
+#
+# This is the workflow you reach for when you want to know whether a specific
+# production change breaks the science, before merging it. It reports exactly
+# which SHA it tested, in the job summary and in the artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      production_repo:
+        description: "Production repo to test (owner/name). Must be PUBLIC: this is a public harness and no secret is exposed to it."
+        default: "mufflyt/mufflyaccess"
+        required: true
+      production_ref:
+        description: "Branch, tag or SHA to test"
+        default: "main"
+        required: true
+      random_seed:
+        description: "Base seed for randomized worlds"
+        default: "20260816"
+        required: true
+      random_iterations:
+        description: "How many randomized worlds to generate"
+        default: "500"
+        required: true
+      run_mutation_tests:
+        description: "Run the sabotage layer"
+        type: boolean
+        default: true
+      r_version:
+        description: "R version"
+        default: "release"
+        required: true
+      retain_artifacts_days:
+        description: "Artifact retention in days"
+        default: "30"
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.production_ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RENV_CONFIG_AUTOLOADER_ENABLED: "false"
+
+jobs:
+  requested:
+    name: "${{ github.event.inputs.production_repo }}@${{ github.event.inputs.production_ref }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PRODUCTION_REPO: ${{ github.event.inputs.production_repo }}
+      PRODUCTION_REF: ${{ github.event.inputs.production_ref }}
+      HARNESS_SEED: ${{ github.event.inputs.random_seed }}
+      HARNESS_RANDOM_WORLDS: ${{ github.event.inputs.random_iterations }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Refuse a private target rather than half-working. A public harness has
+      # no credential for a private repo, and the useful failure is an explicit
+      # one -- not a run that installs nothing, skips every cross-check and
+      # still reports green.
+      - name: Reject a production repo this harness cannot read
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://api.github.com/repos/${PRODUCTION_REPO}")
+          if [ "$code" != "200" ]; then
+            echo "::error title=Production repo not publicly readable::${PRODUCTION_REPO} returned HTTP ${code}. This harness is public and holds no token, so it cannot test a private repository. mufflyt/isochrones is private; mufflyt/mufflyaccess is public."
+            exit 1
+          fi
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ github.event.inputs.r_version }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::testthat, any::sf, any::yaml, any::withr, any::digest
+          dependencies: '"hard"'
+
+      - name: Resolve and record the production SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/${PRODUCTION_REPO}.git" "${PRODUCTION_REF}" | cut -f1)"
+          if [ -z "$sha" ]; then sha="${PRODUCTION_REF}"; fi   # a raw SHA was given
+          echo "PRODUCTION_SHA=$sha" >> "$GITHUB_ENV"
+          {
+            echo "### Requested production build"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| repo | \`${PRODUCTION_REPO}\` |"
+            echo "| ref | \`${PRODUCTION_REF}\` |"
+            echo "| resolved SHA | \`${sha}\` |"
+            echo "| seed | \`${HARNESS_SEED}\` |"
+            echo "| random worlds | \`${HARNESS_RANDOM_WORLDS}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install production at the resolved SHA
+        shell: Rscript {0}
+        run: |
+          if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+          remotes::install_github(
+            paste0(Sys.getenv("PRODUCTION_REPO"), "@", Sys.getenv("PRODUCTION_SHA")),
+            upgrade = "never")
+          pkg <- sub("^.*/", "", Sys.getenv("PRODUCTION_REPO"))
+          if (!requireNamespace(pkg, quietly = TRUE)) {
+            stop("production package '", pkg, "' failed to install")
+          }
+
+      - name: Record the environment
+        if: always()
+        shell: Rscript {0}
+        run: |
+          dir.create("artifacts", showWarnings = FALSE)
+          writeLines(utils::capture.output(utils::sessionInfo()), "artifacts/sessionInfo.txt")
+          writeLines(c(paste0("production_repo=", Sys.getenv("PRODUCTION_REPO")),
+                       paste0("production_sha=", Sys.getenv("PRODUCTION_SHA")),
+                       paste0("seed=", Sys.getenv("HARNESS_SEED")),
+                       paste0("random_worlds=", Sys.getenv("HARNESS_RANDOM_WORLDS"))),
+                     "artifacts/run-parameters.txt")
+
+      - name: Run
+        run: |
+          if [ "${{ github.event.inputs.run_mutation_tests }}" = "true" ]; then
+            Rscript scripts/run-ci.R
+          else
+            Rscript scripts/run-ci.R --tier=pr
+          fi
+
+      - name: Verify test accounting
+        if: always()
+        run: Rscript scripts/verify-test-accounting.R
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manual-${{ github.run_id }}
+          path: artifacts/
+          retention-days: ${{ fromJSON(github.event.inputs.retain_artifacts_days) }}
+          if-no-files-found: error

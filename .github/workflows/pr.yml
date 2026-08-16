@@ -1,0 +1,103 @@
+name: PR
+
+# TIER A: the fast gate. Deterministic tests only, no randomized sweep, no
+# mutation layer. Target is a strong smoke/science gate in a couple of minutes,
+# not the whole nightly battery.
+#
+# A PR must never appear green because the runner exited early. The completion
+# sentinel and the separate accounting verification are what enforce that.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege. This workflow reads code and uploads artifacts; it needs
+# nothing else, and a public repo running PR code must not hold write
+# credentials. `pull_request` (not `pull_request_target`) is deliberate: fork
+# code runs without access to secrets.
+permissions:
+  contents: read
+
+env:
+  # The production commit under test. Pinned so a run is reproducible; the
+  # nightly and manual workflows can override it.
+  PRODUCTION_REPO: mufflyt/mufflyaccess
+  PRODUCTION_REF: main
+  HARNESS_SEED: "20260816"
+  HARNESS_RANDOM_WORLDS: "10"
+  # HALL_OF_SHAME lesson carried over from isochrones: without this the project
+  # .Rprofile can activate renv, whose source-only repos shadow use-public-rspm
+  # and turn a 3-minute job into a 90-minute source build.
+  RENV_CONFIG_AUTOLOADER_ENABLED: "false"
+
+jobs:
+  gate:
+    name: science gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::testthat, any::sf, any::yaml, any::withr, any::digest
+          dependencies: '"hard"'
+
+      # Resolve the production commit BEFORE installing it, and record it. A
+      # result that cannot name the commit it tested is not reproducible.
+      - name: Resolve and record the production SHA
+        id: prod
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/${PRODUCTION_REPO}.git" "${PRODUCTION_REF}" | cut -f1)"
+          if [ -z "$sha" ]; then
+            echo "::error title=Cannot resolve production ref::${PRODUCTION_REPO}@${PRODUCTION_REF}"
+            exit 1
+          fi
+          echo "PRODUCTION_SHA=$sha" >> "$GITHUB_ENV"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "testing ${PRODUCTION_REPO}@${sha}"
+
+      - name: Install production at the resolved SHA
+        shell: Rscript {0}
+        run: |
+          # Fail closed. install.packages() only WARNS on failure, so a missing
+          # production package would otherwise sail through to a test run that
+          # skips every cross-check and reports green.
+          if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+          remotes::install_github(
+            paste0(Sys.getenv("PRODUCTION_REPO"), "@", Sys.getenv("PRODUCTION_SHA")),
+            upgrade = "never", quiet = FALSE)
+          if (!requireNamespace("mufflyaccess", quietly = TRUE)) {
+            stop("production package failed to install; refusing to run a harness ",
+                 "that would skip every cross-check and report green")
+          }
+
+      - name: Run the science gate
+        run: Rscript scripts/run-ci.R --tier=pr
+
+      # Separate step, always runs. "Did it finish" and "did it pass" must stay
+      # independent signals.
+      - name: Verify test accounting
+        if: always()
+        run: Rscript scripts/verify-test-accounting.R
+
+      - name: Upload failure artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-artifacts-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: error
