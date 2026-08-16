@@ -132,14 +132,25 @@ jobs:
           # nothing secret is exposed to fork code.
           GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-          remotes::install_github(
-            paste0(Sys.getenv("PRODUCTION_REPO"), "@", Sys.getenv("PRODUCTION_SHA")),
-            upgrade = "never")
+          # pak, not remotes. remotes::install_github() did not pull production's
+          # own CRAN dependencies on the oldrel-1 runner and R CMD INSTALL died
+          # with "dependency 'stringr' is not available". pak resolves the full
+          # dependency graph, including system requirements, and is already
+          # present from setup-r-dependencies.
+          #
+          # Fail closed either way: install.packages() only WARNS on failure, so
+          # without the requireNamespace() check a missing production package
+          # would sail through to a run that skips every cross-check and reports
+          # green -- the precise false signal this harness exists to prevent.
           pkg <- sub("^.*/", "", Sys.getenv("PRODUCTION_REPO"))
+          pak::pkg_install(
+            paste0(Sys.getenv("PRODUCTION_REPO"), "@", Sys.getenv("PRODUCTION_SHA")),
+            ask = FALSE)
           if (!requireNamespace(pkg, quietly = TRUE)) {
-            stop("production package '", pkg, "' failed to install")
+            stop("production package '", pkg, "' failed to install; refusing to run ",
+                 "a harness that would skip every cross-check and report green")
           }
+          cat("installed", pkg, as.character(utils::packageVersion(pkg)), "\n")
 
       - name: Run
         run: |
