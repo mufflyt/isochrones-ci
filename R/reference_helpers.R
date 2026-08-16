@@ -286,3 +286,122 @@ ref_safe_divide <- function(numerator, denominator) {
   out[ok] <- n[ok] / d[ok]
   out
 }
+
+# ------------------------------------------------------- survival analysis ---
+
+#' REFERENCE: reconstruct a survival curve from its annual hazards
+#'
+#' A discrete-time survival function and its hazard are not two independent
+#' quantities -- one determines the other:
+#'
+#'   S(a_0)   = 1 - h(a_0)          (surviving the first interval)
+#'   S(a+1)   = S(a) * (1 - h(a+1))
+#'
+#' So publishing both is publishing a checkable identity. If production's
+#' `p_still_active` column and its `annual_hazard` column disagree, at least one
+#' is wrong, and no amount of plausibility in either alone would reveal it.
+#'
+#' This is the most valuable kind of cross-check available: it needs no external
+#' data and no second implementation of the model, only the definition.
+ref_survival_from_hazard <- function(hazard) {
+  stopifnot(is.numeric(hazard), all(hazard >= 0 & hazard <= 1, na.rm = TRUE))
+  cumprod(1 - hazard)
+}
+
+#' REFERENCE: hazard recovered from a survival curve
+#'
+#'   h(a+1) = 1 - S(a+1)/S(a)
+#'
+#' The inverse of the above. Provided so the identity can be checked in both
+#' directions -- a bug that happens to be self-consistent in one direction is
+#' rarer, but not impossible.
+ref_hazard_from_survival <- function(surv) {
+  stopifnot(is.numeric(surv))
+  c(1 - surv[1], 1 - surv[-1] / surv[-length(surv)])
+}
+
+# ------------------------------------------------------------- statistics ---
+
+#' REFERENCE: pooled two-proportion z-test
+#'
+#'   p_pool = (x1 + x2) / (n1 + n2)
+#'   se     = sqrt( p_pool (1 - p_pool) (1/n1 + 1/n2) )
+#'   z      = (p1 - p2) / se
+#'   p      = 2 * (1 - Phi(|z|))                 [two-sided]
+#'
+#' Pooled, because the null hypothesis is that the two proportions are equal;
+#' using the unpooled standard error under the null is a common and subtle
+#' error that shifts every p-value slightly.
+ref_two_prop_test <- function(x1, n1, x2, n2) {
+  stopifnot(n1 > 0, n2 > 0, x1 >= 0, x2 >= 0, x1 <= n1, x2 <= n2)
+  p1 <- x1 / n1; p2 <- x2 / n2
+  p_pool <- (x1 + x2) / (n1 + n2)
+  se <- sqrt(p_pool * (1 - p_pool) * (1 / n1 + 1 / n2))
+  if (se == 0) return(c(z = NA_real_, p = NA_real_))
+  z <- (p1 - p2) / se
+  c(z = z, p = 2 * stats::pnorm(-abs(z)))
+}
+
+#' REFERENCE: two-proportion test WITH Yates continuity correction
+#'
+#' Closed form for a 2x2 table (a = x1, b = n1-x1, c = x2, d = n2-x2, N = n1+n2):
+#'
+#'   chi2 = N * ( |ad - bc| - N/2 )^2
+#'          / ( (a+b)(c+d)(a+c)(b+d) )
+#'
+#' Written from the formula rather than by calling prop.test(), so the
+#' comparison is genuinely independent of the function under test.
+#'
+#' WHY THE CORRECTION IS WORTH PINNING. It is not a rounding detail. For
+#' x1=10/n1=100 vs x2=20/n2=100 the uncorrected test gives p = 0.0477 and the
+#' corrected test gives p = 0.0747 -- the same data, on opposite sides of 0.05.
+#' Whether production applies the correction is therefore a decision that can
+#' flip a reported conclusion, and a harness that accepted either would be
+#' asserting nothing about it. Production uses prop.test's default, which is
+#' corrected; this reference asserts that choice explicitly so a silent switch
+#' to correct = FALSE fails here.
+ref_two_prop_test_yates <- function(x1, n1, x2, n2) {
+  stopifnot(n1 > 0, n2 > 0, x1 >= 0, x2 >= 0, x1 <= n1, x2 <= n2)
+  # as.numeric throughout: with integer inputs the four-way product overflows
+  # 32-bit integer for n around 2,000 and silently becomes NA, which turned into
+  # "missing value where TRUE/FALSE needed" inside the guard below. Integer
+  # overflow in a denominator is exactly the sort of thing that produces a
+  # confident wrong answer elsewhere.
+  a <- as.numeric(x1); b <- as.numeric(n1 - x1)
+  c_ <- as.numeric(x2); d <- as.numeric(n2 - x2)
+  N <- as.numeric(n1) + as.numeric(n2)
+  denom <- (a + b) * (c_ + d) * (a + c_) * (b + d)
+  if (denom == 0) return(c(chisq = NA_real_, p = NA_real_))
+  num <- N * (abs(a * d - b * c_) - N / 2)^2
+  chi <- num / denom
+  # The correction can overshoot on tiny tables; prop.test floors the corrected
+  # deviation at zero rather than letting it go negative.
+  if (abs(a * d - b * c_) < N / 2) chi <- 0
+  c(chisq = chi, p = stats::pchisq(chi, df = 1, lower.tail = FALSE))
+}
+
+#' REFERENCE: ordinary least squares slope, closed form
+#'
+#'   b = sum((x - xbar)(y - ybar)) / sum((x - xbar)^2)
+#'
+#' Written out rather than delegated to lm(), so the comparison is against the
+#' formula itself.
+ref_ols_slope <- function(x, y) {
+  stopifnot(length(x) == length(y), length(x) >= 2L)
+  xb <- mean(x); yb <- mean(y)
+  sum((x - xb) * (y - yb)) / sum((x - xb)^2)
+}
+
+#' REFERENCE: share of weight sitting on zero-valued units, as a PERCENT
+#'
+#'   share = 100 * sum(w[access == 0]) / sum(w)
+#'
+#' The units matter and are easy to get wrong in either direction: production
+#' returns a percent, and a consumer that treats it as a fraction under-reports
+#' by a factor of 100. Asserted here so the units are pinned, not assumed.
+ref_zero_share_pct <- function(access, w) {
+  stopifnot(length(access) == length(w))
+  tot <- sum(w)
+  if (tot == 0) return(NA_real_)
+  100 * sum(w[access == 0]) / tot
+}

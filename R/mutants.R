@@ -176,3 +176,185 @@ with_mutant <- function(name, expr, envir = parent.frame()) {
   on.exit(assign(target, original, envir = globalenv()), add = TRUE)
   force(eval(expr, envir = envir))
 }
+
+# ---------------------------------------------------------------------------
+# CHUNKING MUTANTS.
+#
+# Written as EXPLICIT functions, not textual edits to the original. A first
+# attempt built them by deparsing chunk_2sfca() and substituting anchor strings;
+# deparse reformats the source, three anchors stopped matching, and two mutants
+# silently "survived" because they had never been applied at all. A mutant that
+# fails to apply reads exactly like a mutant the suite cannot catch, which would
+# have been reported as a coverage hole that was really a bookkeeping bug.
+#
+# Each is a one-line-ish edit a reviewer could wave through, and each produces a
+# complete, plausible, wrong answer with no error, no NA and no warning.
+#
+# IMPORTANT: several manifest only under specific conditions -- an empty chunk,
+# a non-original chunk order, a provider with an undefined ratio. The probes in
+# test-chunking-invariance.R must create those conditions, or the mutant looks
+# dead when it is merely dormant.
+# ---------------------------------------------------------------------------
+
+# The correct step-1 ratios, shared by the mutants that do not corrupt step 1.
+.correct_ratio <- function(tt, providers, tracts, threshold_min) {
+  pop_of <- stats::setNames(tracts$population, tracts$tract_id)
+  r <- stats::setNames(rep(NA_real_, nrow(providers)), providers$provider_id)
+  for (i in seq_len(nrow(providers))) {
+    pid <- providers$provider_id[i]
+    inside <- tt$tract_id[tt$provider_id == pid & tt$minutes <= threshold_min]
+    denom <- sum(pop_of[inside])
+    r[pid] <- if (length(inside) == 0L || denom == 0) NA_real_ else providers$supply[i] / denom
+  }
+  r
+}
+
+MUTANTS_CHUNKING <- list(
+
+  # THE headline defect. Step 1 recomputed inside each chunk, so every
+  # denominator is only the population of that chunk. Ratios inflate, the map
+  # stays plausible, and the error scales with the chunk count.
+  chunk_local_denominator = list(
+    description = "step-1 denominator computed per chunk instead of over the whole catchment",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        acc_all <- numeric(0); ids_all <- character(0)
+        for (ii in chunks) {
+          if (length(ii) == 0L) next
+          sub <- tracts[ii, , drop = FALSE]
+          ratio <- .correct_ratio(tt, providers, sub, threshold_min)  # MUTATION
+          for (j in seq_len(nrow(sub))) {
+            tid <- sub$tract_id[j]
+            reach <- tt$provider_id[tt$tract_id == tid & tt$minutes <= threshold_min]
+            v <- if (length(reach) == 0L) 0 else sum(ratio[reach][!is.na(ratio[reach])])
+            acc_all <- c(acc_all, v); ids_all <- c(ids_all, tid)
+          }
+        }
+        out <- stats::setNames(acc_all, ids_all)[tracts$tract_id]
+        list(tract_access = out, provider_ratio = .correct_ratio(tt, providers, tracts, threshold_min),
+             chunk_of = NULL, n_chunks = n_chunks)
+      }
+    }
+  ),
+
+  drop_boundary_row = list(
+    description = "the last tract of every chunk is lost at the boundary",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        lost <- unlist(lapply(chunks, function(ii) if (length(ii) > 1L) tracts$tract_id[ii[length(ii)]] else character(0)))
+        r$tract_access <- r$tract_access[!(names(r$tract_access) %in% lost)]   # MUTATION
+        r
+      }
+    }
+  ),
+
+  duplicate_boundary_row = list(
+    description = "the first tract of every chunk is emitted twice",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        dup <- unlist(lapply(chunks, function(ii) if (length(ii)) tracts$tract_id[ii[1]] else character(0)))
+        r$tract_access <- c(r$tract_access, r$tract_access[dup])               # MUTATION
+        r
+      }
+    }
+  ),
+
+  drop_empty_chunk = list(
+    description = "an empty chunk is skipped, so its (absent) rows are never accounted for",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        # Report a chunk count that ignores the empty ones -- the accounting
+        # error that follows from silently dropping them.
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        r$n_chunks <- sum(vapply(chunks, length, integer(1)) > 0L)             # MUTATION
+        r
+      }
+    }
+  ),
+
+  na_to_zero_on_bind = list(
+    description = "an undefined provider ratio is coerced to 0 during reassembly",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        r$provider_ratio[is.na(r$provider_ratio)] <- 0                         # MUTATION
+        r
+      }
+    }
+  ),
+
+  join_by_position = list(
+    description = "chunk results reassembled by row position instead of identifier",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        # Re-label in emission order rather than looking up by id. Identical to
+        # the correct answer when chunks come back in order; wrong the moment
+        # they do not -- which is exactly what a parallel reduce does.
+        ord <- switch(chunk_order, original = seq_len(n_chunks),
+                      reversed = rev(seq_len(n_chunks)),
+                      shuffled = { set.seed(seed); sample(seq_len(n_chunks)) })
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        emitted <- unlist(lapply(ord, function(k) tracts$tract_id[chunks[[k]]]))
+        vals <- unname(r$tract_access[emitted])
+        r$tract_access <- stats::setNames(vals, tracts$tract_id)               # MUTATION
+        r
+      }
+    }
+  ),
+
+  first_chunk_providers_only = list(
+    description = "only the first chunk's provider set is used for every chunk",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        keep <- providers[1, , drop = FALSE]                                   # MUTATION
+        CHUNK_2SFCA_ORIGINAL(tt[tt$provider_id %in% keep$provider_id, , drop = FALSE],
+                             keep, tracts, threshold_min, n_chunks, scheme, chunk_order, seed)
+      }
+    }
+  ),
+
+  reduction_overwrites = list(
+    description = "reassembly overwrites instead of accumulating: only the last chunk survives",
+    make = function() {
+      function(tt, providers, tracts, threshold_min, n_chunks = 1L,
+               scheme = "even", chunk_order = "original", seed = 1L) {
+        r <- CHUNK_2SFCA_ORIGINAL(tt, providers, tracts, threshold_min,
+                                  n_chunks, scheme, chunk_order, seed)
+        chunks <- make_chunks(nrow(tracts), n_chunks, scheme)
+        last <- chunks[[length(chunks)]]
+        keep <- tracts$tract_id[last]
+        r$tract_access <- r$tract_access[names(r$tract_access) %in% keep]      # MUTATION
+        r
+      }
+    }
+  )
+)
+
+#' Apply a chunking mutant and always restore
+with_chunk_mutant <- function(name, expr, envir = parent.frame()) {
+  m <- MUTANTS_CHUNKING[[name]]
+  if (is.null(m)) stop("unknown chunking mutant: ", name)
+  original <- get("chunk_2sfca", envir = globalenv())
+  assign("chunk_2sfca", m$make(), envir = globalenv())
+  on.exit(assign("chunk_2sfca", original, envir = globalenv()), add = TRUE)
+  force(eval(expr, envir = envir))
+}

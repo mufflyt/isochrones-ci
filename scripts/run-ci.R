@@ -39,9 +39,10 @@ testthat::set_max_fails(Inf)
 # expected-vs-run comparison in verify-test-accounting.R.
 PR_FILES <- c("test-contracts.R", "test-production-contract.R",
               "test-mathematical-invariants.R", "test-reference-crosscheck.R",
+              "test-statistics-crosscheck.R", "test-workforce-invariants.R",
               "test-end-to-end.R", "test-reproducibility.R", "test-geography.R")
 ALL_FILES <- c(PR_FILES, "test-metamorphic.R", "test-adversarial.R",
-               "test-mutation-sabotage.R")
+               "test-chunking-invariance.R", "test-mutation-sabotage.R")
 
 expected <- if (identical(tier, "pr")) PR_FILES else ALL_FILES
 present  <- list.files("tests/testthat", pattern = "^test.*[.]R$")
@@ -60,7 +61,8 @@ dir.create("artifacts", showWarnings = FALSE, recursive = TRUE)
 # below and reported as "12/12 mutants killed" by a PR tier that never ran a
 # single mutant -- a small, plausible, entirely false claim.
 unlink(c("artifacts/SUITE_COMPLETED", "artifacts/skips.txt",
-         "artifacts/mutation-report.csv", "artifacts/test-results.csv",
+         "artifacts/mutation-report.csv", "artifacts/mutation-report-chunking.csv",
+         "artifacts/test-results.csv",
          "artifacts/test-accounting.txt", "artifacts/summary.txt",
          "artifacts/allocation-observation.csv"))
 
@@ -111,7 +113,10 @@ summary_lines <- c(
   sprintf("Production contract:     %s", verdict("test-production-contract.R")),
   sprintf("Mathematical invariants: %s", verdict("test-mathematical-invariants.R")),
   sprintf("Reference cross-check:   %s", verdict("test-reference-crosscheck.R")),
+  sprintf("Statistics cross-check:  %s", verdict("test-statistics-crosscheck.R")),
+  sprintf("Workforce invariants:    %s", verdict("test-workforce-invariants.R")),
   sprintf("Metamorphic tests:       %s", verdict("test-metamorphic.R")),
+  sprintf("Chunking invariance:     %s", verdict("test-chunking-invariance.R")),
   sprintf("Adversarial tests:       %s", verdict("test-adversarial.R")),
   sprintf("Geometry / CRS:          %s", verdict("test-geography.R")),
   sprintf("Reproducibility:         %s", verdict("test-reproducibility.R")),
@@ -124,9 +129,16 @@ summary_lines <- c(
   sprintf("  %s errors", format(n_err, big.mark = ",")),
   sprintf("  %s skipped", format(n_skip, big.mark = ",")),
   "",
-  if (!is.null(mut)) sprintf("Mutation tests:\n  %d/%d mutants killed",
-                             sum(mut$killed), nrow(mut)) else
-    "Mutation tests:\n  not run in this tier",
+  {
+    mc <- tryCatch(utils::read.csv("artifacts/mutation-report-chunking.csv",
+                                   stringsAsFactors = FALSE), error = function(e) NULL)
+    k <- sum(c(if (!is.null(mut)) mut$killed, if (!is.null(mc)) mc$killed))
+    n <- sum(c(if (!is.null(mut)) nrow(mut), if (!is.null(mc)) nrow(mc)))
+    if (n > 0L) sprintf("Mutation tests:\n  %d/%d mutants killed (%d core, %d chunking)",
+                        k, n, if (is.null(mut)) 0L else nrow(mut),
+                        if (is.null(mc)) 0L else nrow(mc))
+    else "Mutation tests:\n  not run in this tier"
+  },
   "",
   sprintf("Test accounting:\n  %s",
           if (file.exists("artifacts/SUITE_COMPLETED")) "COMPLETE" else "INCOMPLETE"),

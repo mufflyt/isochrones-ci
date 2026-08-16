@@ -45,7 +45,28 @@ The final section is the more important one: **what this suite does not prove.**
 | Generating a world does not perturb the caller's RNG | reproducibility | `.Random.seed` comparison | "reproducible" being quietly false under reordering |
 | Committed fixtures still regenerate from their seed | reproducibility + nightly | regenerate and diff | a hand-edited, no-longer-reproducible fixture |
 | The golden E2E result is unchanged | end-to-end | structured per-band and per-tract comparison | any scientific regression reaching the output |
-| The suite can actually detect wrong science | mutation sabotage | 12 controlled mutants, 12 probes | the validation suite has a hole |
+| The suite can actually detect wrong science | mutation sabotage | 20 controlled mutants, 18 probes | the validation suite has a hole |
+| **Chunk count does not change the answer** | `test-chunking-invariance.R` :: chunk count | 1, 2, 3, 7, 10, 30, 60 chunks, compared **by identifier**, **exact** equality | a decomposition bug |
+| **Chunk shape does not change the answer** | chunking :: scheme | even, uneven (with empty and singleton chunks), interleaved | off-by-one at a ragged boundary |
+| **Chunk order does not change the answer** | chunking :: order | original, reversed, deterministically shuffled | a reduce that depends on arrival order |
+| **Reassembly is order-free** | chunking :: reassembly | concatenate in three orders, canonicalise by id | results joined by row number |
+| **No tract lost, duplicated or invented** | chunking :: conservation | row count, key uniqueness, set equality, every count and scheme | boundary rows dropped or doubled |
+| **Population and supply conserved across the partition** | chunking :: conservation | partition covers each tract once; provider ratios unpartitioned | mass lost at a boundary |
+| **Zero and NA semantics survive chunking** | chunking :: semantics | counts of genuine-0 and undefined-ratio preserved | NA coerced to 0 during bind |
+| **Step-1 denominators use the WHOLE catchment** | chunking :: cross-boundary | one provider reaching 60 tracts split across 1-60 chunks; exact ratio | **the headline E2SFCA chunking defect** |
+| **Provider ratios do not move with the chunk count** | chunking :: cross-boundary | exact comparison of all step-1 ratios | a partially-plausible map |
+| Seven hostile boundary configurations behave | chunking :: adversarial | provider spanning chunks; tract reached from many chunks; exact-threshold provider; empty chunk; split catchment; duplicate coordinates; zero-pop tract at a boundary | boundary-specific defects |
+| Random worlds at random chunk counts 1-60 agree | chunking :: metamorphic | deterministic seeds, random scheme and order | anything the fixed cases miss |
+| Worker-style decomposition agrees (1, 2, 4 workers) | chunking :: worker count | round-robin chunk assignment, sequential reduce | a reduce-side bug. **Labelled: HARNESS algorithm, not production's parallel path** |
+| Published survival curve equals its own hazards | `test-workforce-invariants.R` | increment identity S(a+1)/S(a) = 1-h(a+1) | one of the two published columns is wrong |
+| The survival/hazard anchoring factor is constant | workforce | max(k) - min(k) < 1e-12 | the two columns describe different processes |
+| Survival is non-increasing; hazard within [0,1] | workforce | monotone check | people un-retiring |
+| Shifting retirement later can only raise survival | workforce :: metamorphic | +2 / -2 year shift | an inverted scenario lever |
+| Production applies the Yates continuity correction | `test-statistics-crosscheck.R` | closed-form 2x2 chi-square, not `prop.test` | **a p-value moving across 0.05** |
+| Trend slope matches closed-form OLS | statistics | sum((x-x̄)(y-ȳ))/sum((x-x̄)²) | a regression regression |
+| A CI contains its own point estimate | statistics | lo ≤ est ≤ hi | an interval excluding its estimate |
+| Zero-access share is a PERCENT | statistics | units pinned against reference | a consumer under-reporting 100× |
+| Monte Carlo CI is seed-deterministic | statistics | repeat with same and different seed | an unwired seed, or a drifting interval |
 
 ---
 
@@ -106,23 +127,43 @@ marketing.
 3. **Nothing about routing.** The travel-time model is distance ÷ speed with a
    circuity factor. It is not a router and does not pretend to be. Real
    isochrones are not discs.
-4. **Nothing about performance**, memory, or the parallel execution paths
-   production actually uses.
-5. **Nothing about the parts of `mufflyaccess` not listed above** — 120 exports
-   exist; roughly a dozen are checked here.
-6. **The reference could be wrong.** It is independent, not infallible. Where the
+4. **Nothing about production's chunking or parallelism.** The chunking layer
+   exercises `R/chunking.R`, which is the **harness's own** decomposition of the
+   harness's own 2SFCA. It proves that decomposition is invariant and that the
+   suite catches eight classic decomposition defects. It executes no production
+   chunking, no real parallel backend, no fork, and no GEOS interaction. The
+   worker-count test simulates round-robin assignment **sequentially**, and says
+   so in the test itself.
+5. **Nothing about performance** or memory.
+6. **Nothing about the parts of `mufflyaccess` not listed above** — 120 exports
+   exist; roughly two dozen are checked here.
+7. **The reference could be wrong.** It is independent, not infallible. Where the
    reference and production agreed and both were wrong, this suite would say
    nothing. The mutation layer bounds this: 12 plausible errors are demonstrably
    caught, which is evidence, not proof.
-7. **Passing does not mean the science is right.** It means these specific claims
+8. **Passing does not mean the science is right.** It means these specific claims
    held, against these fixtures, at that production commit.
 
 ---
 
 ## Mutation testing: evidence the suite bites
 
-12 controlled mutants, each a plausible mistake rather than a nonsense one. All
-12 are killed; the killing probe is named for each.
+**20 controlled mutants** -- 12 core plus 8 chunking -- each a plausible mistake
+rather than a nonsense one. All 20 are killed; the killing probe is named for
+each.
+
+The chunking mutants were first written as textual edits to `chunk_2sfca()`,
+built by deparsing it and substituting anchor strings. Three anchors stopped
+matching because `deparse()` reformats source, so two mutants silently
+**survived without ever having been applied** -- which reads exactly like a hole
+in the suite when it is really a bookkeeping bug. They are now explicit
+functions. A mutant that cannot be applied is worse than no mutant, for the same
+reason a guard that cannot fail is worse than no guard.
+
+Several chunking mutants are **dormant** unless the probe creates the right
+conditions: `drop_empty_chunk` needs a scheme that produces an empty chunk,
+`join_by_position` needs a non-original chunk order, `na_to_zero_on_bind` needs
+a provider with an undefined ratio. The probes create all three.
 
 | Mutant | Killed by |
 |---|---|
@@ -138,6 +179,14 @@ marketing.
 | `x/0` allowed through as `Inf` | `divide_by_zero_is_na` |
 | short identifiers rejected instead of zero-padded | `short_id_is_padded` |
 | containment asserted in the wrong direction | `containment_direction` |
+| **step-1 denominator computed per chunk** | `identical_across_counts` |
+| last tract of every chunk lost at the boundary | `no_row_lost_or_duplicated` |
+| first tract of every chunk emitted twice | `no_row_lost_or_duplicated` |
+| empty chunk skipped rather than accounted | `empty_chunk_accounted` |
+| NA provider ratio coerced to 0 on bind | `undefined_ratio_stays_na` |
+| results reassembled by row position | `order_invariant` |
+| only the first chunk's provider set used | `all_providers_used` |
+| reduction overwrites instead of accumulating | `no_row_lost_or_duplicated` |
 
 A sanity test first requires **every probe to pass on unmutated code**, so a
 "kill" cannot be a broken probe. Mutants are restored via `on.exit`, and a test
