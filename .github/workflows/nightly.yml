@@ -66,8 +66,33 @@ jobs:
           [ -n "$sha" ] || { echo "::error::cannot resolve ${PRODUCTION_REPO}@${PRODUCTION_REF}"; exit 1; }
           echo "PRODUCTION_SHA=$sha" >> "$GITHUB_ENV"
 
+      # Record the environment BEFORE anything that can fail, so an early
+      # failure still produces a downloadable artifact. Without this the upload
+      # step (deliberately if-no-files-found: error) fails on top of the real
+      # failure and buries it.
+      - name: Record the environment
+        if: always()
+        shell: Rscript {0}
+        run: |
+          dir.create("artifacts", showWarnings = FALSE, recursive = TRUE)
+          writeLines(utils::capture.output(utils::sessionInfo()), "artifacts/sessionInfo.txt")
+          writeLines(c(paste0("production_repo=", Sys.getenv("PRODUCTION_REPO")),
+                       paste0("production_ref=", Sys.getenv("PRODUCTION_REF")),
+                       paste0("production_sha=", Sys.getenv("PRODUCTION_SHA")),
+                       paste0("r_version=", as.character(getRversion())),
+                       paste0("seed=", Sys.getenv("HARNESS_SEED")),
+                       paste0("random_worlds=", Sys.getenv("HARNESS_RANDOM_WORLDS"))),
+                     "artifacts/run-parameters.txt")
+
       - name: Install production at the resolved SHA
         shell: Rscript {0}
+        env:
+          # remotes reads the GitHub API to fetch DESCRIPTION. Unauthenticated
+          # that request is rate-limited and failed outright on the first run
+          # ("cannot open URL .../contents/DESCRIPTION"). GITHUB_TOKEN is
+          # read-only and is the right credential here; no PAT is involved, and
+          # nothing secret is exposed to fork code.
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
           remotes::install_github(
@@ -76,16 +101,6 @@ jobs:
           if (!requireNamespace("mufflyaccess", quietly = TRUE)) {
             stop("production package failed to install; refusing to report green")
           }
-
-      - name: Record the environment (so a failure is reproducible)
-        if: always()
-        shell: Rscript {0}
-        run: |
-          dir.create("artifacts", showWarnings = FALSE)
-          writeLines(utils::capture.output(utils::sessionInfo()),
-                     "artifacts/sessionInfo.txt")
-          ip <- as.data.frame(utils::installed.packages()[, c("Package", "Version")])
-          utils::write.csv(ip, "artifacts/installed-packages.csv", row.names = FALSE)
 
       - name: Run the full battery
         run: Rscript scripts/run-ci.R
