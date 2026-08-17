@@ -20,6 +20,8 @@ Suggests:
     testthat (>= 3.0.0),
     here,
     stringr,
+    stringdist,
+    stringi,
     sf,
     yaml,
     jsonlite,
