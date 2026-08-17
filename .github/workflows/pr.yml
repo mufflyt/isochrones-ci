@@ -50,7 +50,7 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          extra-packages: any::testthat, any::sf, any::yaml, any::withr, any::digest
+          extra-packages: any::testthat, any::sf, any::yaml, any::withr, any::digest, any::here, any::stringr
           dependencies: '"hard"'
 
       # Resolve the production commit BEFORE installing it, and record it. A
