@@ -1,0 +1,34 @@
+name: ABOG retirement consensus focused
+
+on:
+  push:
+    branches:
+      - ci/abog-retirement-consensus
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RENV_CONFIG_AUTOLOADER_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: >-
+            any::testthat,
+            any::DBI,
+            any::duckdb
+          dependencies: '"hard"'
+
+      - name: Run focused status-only consensus test
+        run: Rscript scripts/abog-consensus-focused.R
