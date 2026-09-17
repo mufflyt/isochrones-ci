@@ -59,7 +59,7 @@ jobs:
       HARNESS_SEED: ${{ github.event.inputs.random_seed }}
       HARNESS_RANDOM_WORLDS: ${{ github.event.inputs.random_iterations }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Refuse a private target rather than half-working. A public harness has
       # no credential for a private repo, and the useful failure is an explicit
