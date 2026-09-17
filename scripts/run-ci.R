@@ -40,7 +40,8 @@ testthat::set_max_fails(Inf)
 PR_FILES <- c("test-contracts.R", "test-production-contract.R",
               "test-mathematical-invariants.R", "test-reference-crosscheck.R",
               "test-statistics-crosscheck.R", "test-workforce-invariants.R",
-              "test-end-to-end.R", "test-reproducibility.R", "test-geography.R")
+              "test-end-to-end.R", "test-reproducibility.R", "test-geography.R",
+              "test-name-matching-primitives.R")
 ALL_FILES <- c(PR_FILES, "test-metamorphic.R", "test-adversarial.R",
                "test-chunking-invariance.R", "test-mutation-sabotage.R")
 
